@@ -26,6 +26,8 @@ setup(
         "rlp==0.4.7",
         "eth-keys==0.1.0b3",
         "trie>=0.3.1",
+        "eth-tester>=0.1.0b5",
+        "web3>=4.0.0b2",
     ],
     extra_require={
         'leveldb': [
