@@ -82,6 +82,8 @@ lookahead_periods: num
 # The address of sighasher contract
 sighasher_addr: address
 
+purity_checker_addr: address
+
 
 # Events
 # CollationAdded(indexed uint256 shard, bytes collationHeader, bool isNewHead, uint256 score)
@@ -99,6 +101,7 @@ def __init__():
     self.shard_count = 100
     self.lookahead_periods = 4
     self.sighasher_addr = 0xDFFD41E18F04Ad8810c83B14FD1426a82E625A7D
+    self.purity_checker_addr = 0x9f56d05661285a8FCc0dBDb3C8070aD024030AF3
 
 
 # Checks if empty_slots_stack_top is empty
@@ -146,6 +149,17 @@ def get_validators_max_index() -> num:
 @public
 @payable
 def deposit(validation_code_addr: address, return_addr: address) -> num:
+    # keccak('submit(address)') == '\xa1\x90>\xab'
+    purity_check_result = extract32(
+        raw_call(
+            self.purity_checker_addr,
+            concat('\xa1\x90>\xab', as_bytes32(validation_code_addr)),
+            gas=500000,
+            outsize=32,
+        ),
+        0,
+    )
+    assert purity_check_result == as_bytes32(1)
     assert not self.is_valcode_deposited[validation_code_addr]
     assert msg.value == self.deposit_size
     # find the empty slot index in validators set
