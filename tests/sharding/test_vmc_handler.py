@@ -84,6 +84,26 @@ def send_raw_transaction(vmc_handler, raw_transaction):
     return transaction_hash
 
 
+def setup_shard_tracker(vmc_handler, shard_id):
+    log_handler = LogHandler(vmc_handler.web3)
+    shard_tracker = ShardTracker(shard_id, log_handler, vmc_handler.address)
+    vmc_handler.set_shard_tracker(shard_id, shard_tracker)
+
+
+def import_key(vmc_handler, privkey):
+    """
+    :param vmc_handler: VMCHandler
+    :param privkey: PrivateKey object from eth_keys
+    """
+    try:
+        vmc_handler.web3.personal.importRawKey(privkey.to_hex(), PASSPHRASE)
+    # Exceptions happen when the key is already imported.
+    #   - ValueError: `web3.py`
+    #   - ValidationError: `eth_tester`
+    except (ValueError, ValidationError):
+        pass
+
+
 def is_vmc_deployed(vmc_handler):
     return (
         get_code(vmc_handler, vmc_handler.address) != b'' and
@@ -116,24 +136,6 @@ def mk_initiating_transactions(sender_privkey,
     return funding_tx_for_tx_sender, vmc_tx
 
 
-def send_withdraw_tx(vmc_handler, validator_index):
-    assert validator_index < len(test_keys)
-    vmc_handler.withdraw(validator_index)
-    mine(vmc_handler, 1)
-
-
-def send_deposit_tx(vmc_handler):
-    """
-    Do deposit in VMC to be a validator
-
-    :param privkey: PrivateKey object
-    :return: returns the validator's address
-    """
-    vmc_handler.deposit()
-    mine(vmc_handler, vmc_handler.config['PERIOD_LENGTH'])
-    return vmc_handler.get_default_sender_address()
-
-
 def deploy_initiating_contracts(vmc_handler, privkey):
     w3 = vmc_handler.web3
     nonce = get_nonce(vmc_handler, privkey.public_key.to_canonical_address())
@@ -151,183 +153,6 @@ def deploy_initiating_contracts(vmc_handler, privkey):
         'deploy_initiating_contracts: vmc_tx_hash=%s',
         w3.eth.getTransactionReceipt(encode_hex(txs[-1].hash)),
     )
-
-
-def import_key(vmc_handler, privkey):
-    """
-    :param vmc_handler: VMCHandler
-    :param privkey: PrivateKey object from eth_keys
-    """
-    try:
-        vmc_handler.web3.personal.importRawKey(privkey.to_hex(), PASSPHRASE)
-    # Exceptions happen when the key is already imported.
-    #   - ValueError: `web3.py`
-    #   - ValidationError: `eth_tester`
-    except (ValueError, ValidationError):
-        pass
-
-
-def mk_testing_colhdr(vmc_handler,
-                      shard_id,
-                      parent_hash,
-                      number,
-                      coinbase=test_keys[0].public_key.to_canonical_address()):
-    period_length = vmc_handler.config['PERIOD_LENGTH']
-    current_block_number = vmc_handler.web3.eth.blockNumber
-    expected_period_number = (current_block_number + 1) // period_length
-    logger.debug("mk_testing_colhdr: expected_period_number=%s", expected_period_number)
-
-    period_start_prevblock_number = expected_period_number * period_length - 1
-    period_start_prev_block = vmc_handler.web3.eth.getBlock(period_start_prevblock_number)
-    period_start_prevhash = period_start_prev_block['hash']
-    logger.debug("mk_testing_colhdr: period_start_prevhash=%s", period_start_prevhash)
-
-    transaction_root = b"tx_list " * 4
-    state_root = b"post_sta" * 4
-    receipt_root = b"receipt " * 4
-
-    collation_header = CollationHeader(
-        shard_id=shard_id,
-        expected_period_number=expected_period_number,
-        period_start_prevhash=period_start_prevhash,
-        parent_hash=parent_hash,
-        transaction_root=transaction_root,
-        coinbase=coinbase,
-        state_root=state_root,
-        receipt_root=receipt_root,
-        number=number,
-    )
-    return collation_header
-
-
-def add_header_constant_call(vmc_handler, collation_header):
-    args = (
-        getattr(collation_header, field[0])
-        for field in collation_header.fields
-    )
-    # transform address from canonical to checksum_address, to comply with web3.py
-    args_with_checksum_address = (
-        to_checksum_address(item) if is_address(item) else item
-        for item in args
-    )
-    # Here we use *args_with_checksum_address as the argument, to ensure the order of arguments
-    # is the same as the one of parameters of `VMC.add_header`
-    result = vmc_handler.functions.add_header(
-        *args_with_checksum_address
-    ).call(
-        vmc_handler.mk_contract_tx_detail(
-            sender_address=vmc_handler.get_default_sender_address(),
-            gas=vmc_handler.config['DEFAULT_GAS'],
-            gas_price=1,
-        )
-    )
-    return result
-
-
-def mk_colhdr_chain(vmc_handler, shard_id, num_collations):
-    """
-    Make a collation header chain from genesis collation
-    :return: the collation hash of the tip of the chain
-    """
-    top_collation_hash = GENESIS_COLHDR_HASH
-    for collation_number in range(num_collations):
-        header = mk_testing_colhdr(vmc_handler, shard_id, top_collation_hash, collation_number + 1)
-        assert add_header_constant_call(vmc_handler, header)
-        tx_hash = vmc_handler.add_header(header)
-        mine(vmc_handler, vmc_handler.config['PERIOD_LENGTH'])
-        assert vmc_handler.web3.eth.getTransactionReceipt(tx_hash) is not None
-        top_collation_hash = header.hash
-    return top_collation_hash
-
-
-@pytest.mark.parametrize(  # noqa: F811
-    'mock_score,mock_is_new_head,expected_score,expected_is_new_head',
-    (
-        # test case in doc.md
-        (
-            (10, 11, 12, 11, 13, 14, 15, 11, 12, 13, 14, 12, 13, 14, 15, 16, 17, 18, 19, 16),
-            (True, True, True, False, True, True, True, False, False, False, False, False, False, False, False, True, True, True, True, False),  # noqa: E501
-            (19, 18, 17, 16, 16, 15, 15, 14, 14, 14, 13, 13, 13, 12, 12, 12, 11, 11, 11, 10),
-            (True, True, True, True, False, True, False, True, False, False, True, False, False, True, False, False, True, False, False, True),  # noqa: E501
-        ),
-        (
-            (1, 2, 3, 2, 2, 2),
-            (True, True, True, False, False, False),
-            (3, 2, 2, 2, 2, 1),
-            (True, True, False, False, False, True),
-        ),
-    )
-)
-def test_shard_tracker_fetch_candidate_head(vmc,
-                                            mock_score,
-                                            mock_is_new_head,
-                                            expected_score,
-                                            expected_is_new_head):
-    shard_id = 0
-    log_handler = LogHandler(vmc.web3)
-    shard_tracker = ShardTracker(shard_id, log_handler, vmc.address)
-    mock_collation_added_logs = [
-        {
-            'header': [None] * 10,
-            'score': mock_score[i],
-            'is_new_head': mock_is_new_head[i],
-        } for i in range(len(mock_score))
-    ]
-    # mock collation_added_logs
-    shard_tracker.new_logs = mock_collation_added_logs
-    for i in range(len(mock_score)):
-        log = shard_tracker.fetch_candidate_head()
-        assert log['score'] == expected_score[i]
-        assert log['is_new_head'] == expected_is_new_head[i]
-    with pytest.raises(NoCandidateHead):
-        log = shard_tracker.fetch_candidate_head()
-
-
-def setup_shard_tracker(vmc_handler, shard_id):
-    log_handler = LogHandler(vmc_handler.web3)
-    shard_tracker = ShardTracker(shard_id, log_handler, vmc_handler.address)
-    vmc_handler.set_shard_tracker(shard_id, shard_tracker)
-
-
-def test_vmc_mk_build_transaction_detail(vmc):  # noqa: F811
-    # test `mk_build_transaction_detail` ######################################
-    build_transaction_detail = vmc.mk_build_transaction_detail(
-        nonce=0,
-        gas=10000,
-    )
-    assert 'nonce' in build_transaction_detail
-    assert 'gas' in build_transaction_detail
-    assert 'chainId' in build_transaction_detail
-    with pytest.raises(ValueError):
-        build_transaction_detail = vmc.mk_build_transaction_detail(
-            nonce=None,
-            gas=10000,
-        )
-    with pytest.raises(ValueError):
-        build_transaction_detail = vmc.mk_build_transaction_detail(
-            nonce=0,
-            gas=None,
-        )
-
-
-def test_vmc_mk_contract_tx_detail(vmc):  # noqa: F811
-    # test `mk_contract_tx_detail` ######################################
-    tx_detail = vmc.mk_contract_tx_detail(
-        sender_address=ZERO_ADDRESS,
-        gas=vmc.config['DEFAULT_GAS'],
-    )
-    assert 'from' in tx_detail
-    assert 'gas' in tx_detail
-    with pytest.raises(ValueError):
-        tx_detail = vmc.mk_contract_tx_detail(
-            sender_address=ZERO_ADDRESS,
-            gas=None,
-        )
-    with pytest.raises(ValueError):
-        tx_detail = vmc.mk_contract_tx_detail(
-            sender_address=None,
-            gas=vmc.config['DEFAULT_GAS'],
-        )
 
 
 def deploy_vmc(vmc_handler):
@@ -391,6 +216,181 @@ def deploy_vmc_and_add_one_validator(vmc_handler):
     )
     if num_validators == 0:
         add_validator(vmc_handler)
+
+
+def send_deposit_tx(vmc_handler):
+    """
+    Do deposit in VMC to be a validator
+
+    :param privkey: PrivateKey object
+    :return: returns the validator's address
+    """
+    vmc_handler.deposit()
+    mine(vmc_handler, vmc_handler.config['PERIOD_LENGTH'])
+    return vmc_handler.get_default_sender_address()
+
+
+def send_withdraw_tx(vmc_handler, validator_index):
+    assert validator_index < len(test_keys)
+    vmc_handler.withdraw(validator_index)
+    mine(vmc_handler, 1)
+
+
+def add_header_constant_call(vmc_handler, collation_header):
+    args = (
+        getattr(collation_header, field[0])
+        for field in collation_header.fields
+    )
+    # transform address from canonical to checksum_address, to comply with web3.py
+    args_with_checksum_address = (
+        to_checksum_address(item) if is_address(item) else item
+        for item in args
+    )
+    # Here we use *args_with_checksum_address as the argument, to ensure the order of arguments
+    # is the same as the one of parameters of `VMC.add_header`
+    result = vmc_handler.functions.add_header(
+        *args_with_checksum_address
+    ).call(
+        vmc_handler.mk_contract_tx_detail(
+            sender_address=vmc_handler.get_default_sender_address(),
+            gas=vmc_handler.config['DEFAULT_GAS'],
+            gas_price=1,
+        )
+    )
+    return result
+
+
+def mk_testing_colhdr(vmc_handler,
+                      shard_id,
+                      parent_hash,
+                      number,
+                      coinbase=test_keys[0].public_key.to_canonical_address()):
+    period_length = vmc_handler.config['PERIOD_LENGTH']
+    current_block_number = vmc_handler.web3.eth.blockNumber
+    expected_period_number = (current_block_number + 1) // period_length
+    logger.debug("mk_testing_colhdr: expected_period_number=%s", expected_period_number)
+
+    period_start_prevblock_number = expected_period_number * period_length - 1
+    period_start_prev_block = vmc_handler.web3.eth.getBlock(period_start_prevblock_number)
+    period_start_prevhash = period_start_prev_block['hash']
+    logger.debug("mk_testing_colhdr: period_start_prevhash=%s", period_start_prevhash)
+
+    transaction_root = b"tx_list " * 4
+    state_root = b"post_sta" * 4
+    receipt_root = b"receipt " * 4
+
+    collation_header = CollationHeader(
+        shard_id=shard_id,
+        expected_period_number=expected_period_number,
+        period_start_prevhash=period_start_prevhash,
+        parent_hash=parent_hash,
+        transaction_root=transaction_root,
+        coinbase=coinbase,
+        state_root=state_root,
+        receipt_root=receipt_root,
+        number=number,
+    )
+    return collation_header
+
+
+def mk_colhdr_chain(vmc_handler, shard_id, num_collations):
+    """
+    Make a collation header chain from genesis collation
+    :return: the collation hash of the tip of the chain
+    """
+    top_collation_hash = GENESIS_COLHDR_HASH
+    for collation_number in range(num_collations):
+        header = mk_testing_colhdr(vmc_handler, shard_id, top_collation_hash, collation_number + 1)
+        assert add_header_constant_call(vmc_handler, header)
+        tx_hash = vmc_handler.add_header(header)
+        mine(vmc_handler, vmc_handler.config['PERIOD_LENGTH'])
+        assert vmc_handler.web3.eth.getTransactionReceipt(tx_hash) is not None
+        top_collation_hash = header.hash
+    return top_collation_hash
+
+
+@pytest.mark.parametrize(  # noqa: F811
+    'mock_score,mock_is_new_head,expected_score,expected_is_new_head',
+    (
+        # test case in doc.md
+        (
+            (10, 11, 12, 11, 13, 14, 15, 11, 12, 13, 14, 12, 13, 14, 15, 16, 17, 18, 19, 16),
+            (True, True, True, False, True, True, True, False, False, False, False, False, False, False, False, True, True, True, True, False),  # noqa: E501
+            (19, 18, 17, 16, 16, 15, 15, 14, 14, 14, 13, 13, 13, 12, 12, 12, 11, 11, 11, 10),
+            (True, True, True, True, False, True, False, True, False, False, True, False, False, True, False, False, True, False, False, True),  # noqa: E501
+        ),
+        (
+            (1, 2, 3, 2, 2, 2),
+            (True, True, True, False, False, False),
+            (3, 2, 2, 2, 2, 1),
+            (True, True, False, False, False, True),
+        ),
+    )
+)
+def test_shard_tracker_fetch_candidate_head(vmc,
+                                            mock_score,
+                                            mock_is_new_head,
+                                            expected_score,
+                                            expected_is_new_head):
+    shard_id = 0
+    log_handler = LogHandler(vmc.web3)
+    shard_tracker = ShardTracker(shard_id, log_handler, vmc.address)
+    mock_collation_added_logs = [
+        {
+            'header': [None] * 10,
+            'score': mock_score[i],
+            'is_new_head': mock_is_new_head[i],
+        } for i in range(len(mock_score))
+    ]
+    # mock collation_added_logs
+    shard_tracker.new_logs = mock_collation_added_logs
+    for i in range(len(mock_score)):
+        log = shard_tracker.fetch_candidate_head()
+        assert log['score'] == expected_score[i]
+        assert log['is_new_head'] == expected_is_new_head[i]
+    with pytest.raises(NoCandidateHead):
+        log = shard_tracker.fetch_candidate_head()
+
+
+def test_vmc_mk_build_transaction_detail(vmc):  # noqa: F811
+    # test `mk_build_transaction_detail` ######################################
+    build_transaction_detail = vmc.mk_build_transaction_detail(
+        nonce=0,
+        gas=10000,
+    )
+    assert 'nonce' in build_transaction_detail
+    assert 'gas' in build_transaction_detail
+    assert 'chainId' in build_transaction_detail
+    with pytest.raises(ValueError):
+        build_transaction_detail = vmc.mk_build_transaction_detail(
+            nonce=None,
+            gas=10000,
+        )
+    with pytest.raises(ValueError):
+        build_transaction_detail = vmc.mk_build_transaction_detail(
+            nonce=0,
+            gas=None,
+        )
+
+
+def test_vmc_mk_contract_tx_detail(vmc):  # noqa: F811
+    # test `mk_contract_tx_detail` ######################################
+    tx_detail = vmc.mk_contract_tx_detail(
+        sender_address=ZERO_ADDRESS,
+        gas=vmc.config['DEFAULT_GAS'],
+    )
+    assert 'from' in tx_detail
+    assert 'gas' in tx_detail
+    with pytest.raises(ValueError):
+        tx_detail = vmc.mk_contract_tx_detail(
+            sender_address=ZERO_ADDRESS,
+            gas=None,
+        )
+    with pytest.raises(ValueError):
+        tx_detail = vmc.mk_contract_tx_detail(
+            sender_address=None,
+            gas=vmc.config['DEFAULT_GAS'],
+        )
 
 
 # TODO: add tests for memoized_fetch_and_verify_collation respectively
