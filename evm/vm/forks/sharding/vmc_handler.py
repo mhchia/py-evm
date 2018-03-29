@@ -70,7 +70,6 @@ class VMC(Contract):
         self.default_privkey = default_privkey
         self.default_sender_address = default_privkey.public_key.to_canonical_address()
         self.config = get_sharding_config()
-        self.shard_trackers = {}
 
         super().__init__(*args, **kwargs)
 
