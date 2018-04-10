@@ -3,7 +3,7 @@ import logging
 import time
 
 from eth_utils import (
-    to_list,
+    to_set,
 )
 
 from evm.vm.forks.sharding.constants import (
@@ -95,7 +95,7 @@ class WindbackWorker:
                 current_collation_hash,
             )
 
-    @to_list
+    @to_set
     def create_chain_tasks(self, head_collation_hash):
         # collations in this chain
         chain_collations = []
@@ -132,10 +132,12 @@ class WindbackWorker:
           3) time's up
         """
         while self.collation_validity.get(head_collation_hash, True):
-            is_chain_tasks_done = all([task.done() for task in chain_tasks])
+            is_chain_tasks_done = len(chain_tasks) == 0
             if self.is_time_up or is_chain_tasks_done:
                 break
-            await asyncio.wait(chain_tasks, timeout=self.YIELDED_TIME)
+            _, chain_tasks = await asyncio.wait(chain_tasks, timeout=self.YIELDED_TIME)
+        for task in chain_tasks:
+            task.cancel()
 
     async def guess_head(self):
         """
