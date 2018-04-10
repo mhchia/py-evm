@@ -1,10 +1,16 @@
+import asyncio
 import logging
+import pytest
+
+from evm.vm.forks.sharding.windback_worker import (
+    WindbackWorker,
+)
 
 from tests.sharding.fixtures import (  # noqa: F401
     default_shard_id,
     make_collation_header_chain,
+    shard_tracker,
     smc_handler,
-    windback_worker,
 )
 
 
@@ -15,6 +21,40 @@ logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter("[%(levelname)s] %(module)s::%(funcName)s\t| %(message)s")
 console.setFormatter(formatter)
 logger.addHandler(console)
+
+
+SIMULATED_COLLATION_DOWNLOADING_TIME = 2
+SIMULATED_COLLATION_VERIFICATION_TIME = 0.01
+
+
+async def mock_download_collation(collation_hash):
+    logger.debug("Start downloading collation %s", collation_hash)
+    await asyncio.sleep(SIMULATED_COLLATION_DOWNLOADING_TIME)
+    logger.debug("Finished downloading collation %s", collation_hash)
+    collation = collation_hash
+    return collation
+
+
+async def mock_verify_collation(collation, collation_hash):
+    logger.debug("Verifying collation %s", collation_hash)
+    await asyncio.sleep(SIMULATED_COLLATION_VERIFICATION_TIME)
+    return True
+
+
+@pytest.fixture  # noqa: F811
+def windback_worker(smc_handler, monkeypatch):
+    monkeypatch.setattr(
+        'evm.vm.forks.sharding.windback_worker.download_collation',
+        mock_download_collation,
+    )
+    monkeypatch.setattr(
+        'evm.vm.forks.sharding.windback_worker.verify_collation',
+        mock_verify_collation,
+    )
+    return WindbackWorker(
+        smc_handler,
+        shard_tracker(smc_handler, default_shard_id),
+    )
 
 
 def test_guess_head_no_new_collations(windback_worker, smc_handler):  # noqa: F811

@@ -65,9 +65,6 @@ from evm.vm.forks.sharding.smc_handler import (
 from evm.vm.forks.sharding.smc_utils import (
     get_smc_json,
 )
-from evm.vm.forks.sharding.windback_worker import (
-    WindbackWorker,
-)
 
 from tests.sharding.web3_utils import (
     get_code,
@@ -257,11 +254,3 @@ def shard_tracker(smc_handler, shard_id):
         get_collation_added_abi(smc_handler)
     )
     return ShardTracker(shard_id, log_handler, smc_handler.address, collation_added_topic)
-
-
-@pytest.fixture
-def windback_worker(smc_handler):
-    return WindbackWorker(
-        smc_handler,
-        shard_tracker(smc_handler, default_shard_id),
-    )

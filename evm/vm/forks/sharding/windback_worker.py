@@ -11,27 +11,14 @@ from evm.vm.forks.sharding.constants import (
 )
 
 
-NUM_RESERVED_BLOCKS = 5
-SIMULATED_COLLATION_DOWNLOADING_TIME = 2
-SIMULATED_COLLATION_VERIFICATION_TIME = 0.01
-
-
-logger = logging.getLogger("evm.chain.sharding.windback_worker")
-
-
 async def download_collation(collation_hash):
     # TODO: need to implemented after p2p part is done
-    logger.debug("Start downloading collation %s", collation_hash)
-    await asyncio.sleep(SIMULATED_COLLATION_DOWNLOADING_TIME)
-    logger.debug("Finished downloading collation %s", collation_hash)
-    collation = collation_hash
-    return collation
+    return collation_hash
 
 
 async def verify_collation(collation, collation_hash):
     # TODO: to be implemented
-    logger.debug("Verifying collation %s", collation_hash)
-    await asyncio.sleep(SIMULATED_COLLATION_VERIFICATION_TIME)
+
     # data = get_from_p2p_network(collation_hash.data_root)
     # chunks = DATA_SIZE // 32
     # mtree = [0] * chunks + [data[chunks*32: chunks*32+32] for i in range(chunks)]
@@ -39,6 +26,9 @@ async def verify_collation(collation, collation_hash):
     #     mtree[i] = sha3(mtree[i*2] + mtree[i*2+1])
     # assert mtree[i] == collation.data_root
     return True
+
+
+logger = logging.getLogger("evm.chain.sharding.windback_worker")
 
 
 class WindbackWorker:
