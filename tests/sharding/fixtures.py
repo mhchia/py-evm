@@ -264,5 +264,4 @@ def windback_worker(smc_handler):
     return WindbackWorker(
         smc_handler,
         shard_tracker(smc_handler, default_shard_id),
-        smc_handler.sender_address,
     )

@@ -48,10 +48,9 @@ class WindbackWorker:
     is_time_up = None
     collation_validity = None
 
-    def __init__(self, vmc, shard_tracker, my_address):
+    def __init__(self, vmc, shard_tracker):
         self.vmc = vmc
         self.shard_tracker = shard_tracker
-        self.my_address = my_address
 
         self.is_time_up = False
         # map[collation] -> validity
