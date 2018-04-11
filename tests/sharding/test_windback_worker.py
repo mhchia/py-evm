@@ -162,3 +162,21 @@ def test_guess_head_invalid_chain_propagate_invalidity(windback_worker, smc_hand
     windback_worker.run_guess_head()
     assert not windback_worker.collation_validity[header3_hash]
     assert not windback_worker.collation_validity[header4_hash]
+
+
+def test_guess_head_time_out(windback_worker, smc_handler, monkeypatch):  # noqa: F811
+    header1_hash = make_collation_header_chain(smc_handler, default_shard_id, 1)
+
+    async def mock_download_collation_nonstop(collation_hash):
+        while True:
+            await asyncio.sleep(1)
+
+    monkeypatch.setattr(
+        'evm.vm.forks.sharding.windback_worker.download_collation',
+        mock_download_collation_nonstop,
+    )
+
+    time_up_event = asyncio.Event()
+    time_up_event.set()
+    # originally it should be blocked forever, but is stopped due to `time_up_event.set``
+    assert windback_worker.run_guess_head(time_up_event) == header1_hash

@@ -31,18 +31,22 @@ async def verify_collation(collation, collation_hash):
 logger = logging.getLogger("evm.chain.sharding.windback_worker")
 
 
+def clean_done_tasks(tasks):
+    return [
+        task
+        for task in tasks
+        if not task.done()
+    ]
+
+
 class WindbackWorker:
 
-    YIELDED_TIME = 0.1
-
-    is_time_up = None
     collation_validity = None
 
     def __init__(self, vmc, shard_tracker):
         self.vmc = vmc
         self.shard_tracker = shard_tracker
 
-        self.is_time_up = False
         # map[collation] -> validity
         self.collation_validity = {}
 
@@ -111,7 +115,7 @@ class WindbackWorker:
                 )
                 break
 
-    async def wait_for_chain_tasks(self, head_collation_hash, chain_tasks):
+    async def wait_for_chain_tasks(self, head_collation_hash, chain_tasks, event_time_up):
         """
         Keep running the verifying tasks.
         The loop breaks when
@@ -120,15 +124,25 @@ class WindbackWorker:
         Or returns when
           3) time's up
         """
+        task_event_time_up = asyncio.ensure_future(event_time_up.wait())
         while self.collation_validity.get(head_collation_hash, True):
-            is_chain_tasks_done = len(chain_tasks) == 0
-            if self.is_time_up or is_chain_tasks_done:
+            # if time is up
+            if event_time_up.is_set():
+                for task in chain_tasks:
+                    if not task.done():
+                        task.cancel()
                 break
-            _, chain_tasks = await asyncio.wait(chain_tasks, timeout=self.YIELDED_TIME)
-        for task in chain_tasks:
-            task.cancel()
+            chain_tasks = clean_done_tasks(chain_tasks)
+            if len(chain_tasks) == 0:
+                if not task_event_time_up.done():
+                    task_event_time_up.cancel()
+                break
+            await asyncio.wait(
+                chain_tasks + [task_event_time_up],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
 
-    async def guess_head(self):
+    async def guess_head(self, event_time_up):
         """
         Perform windback process.
         Returns
@@ -142,21 +156,22 @@ class WindbackWorker:
 
             chain_tasks = self.create_chain_tasks(head_collation_hash)
 
-            await self.wait_for_chain_tasks(head_collation_hash, chain_tasks)
+            await self.wait_for_chain_tasks(head_collation_hash, chain_tasks, event_time_up)
 
             # Only returns when the head collation is still valid after verifying tasks are done
             is_head_collation_valid = (
                 head_collation_hash in self.collation_validity and
                 self.collation_validity[head_collation_hash]
             )
-            if self.is_time_up or is_head_collation_valid:
+            if event_time_up.is_set() or is_head_collation_valid:
                 logger.debug("time elapsed=%s", time.time() - start)
                 return head_collation_hash
 
         logger.debug("time elapsed=%s", time.time() - start)
         return None
 
-    def run_guess_head(self):
+    def run_guess_head(self, event_time_up=asyncio.Event()):
         loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(self.guess_head())
+        # loop.set_debug(True)
+        result = loop.run_until_complete(self.guess_head(event_time_up))
         return result
